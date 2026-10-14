@@ -2,7 +2,7 @@ import SwiftUI
 import AppKit
 
 enum SettingsTab: String, CaseIterable, Identifiable {
-    case theme, ai, persona, character, calendar, general
+    case theme, ai, persona, character, calendar, career, general
     var id: String { rawValue }
     var label: String {
         switch self {
@@ -11,6 +11,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .persona: "말투"
         case .character: "캐릭터"
         case .calendar: "캘린더"
+        case .career: "커리어"
         case .general: "일반"
         }
     }
@@ -27,7 +28,7 @@ struct SettingsView: View {
                 Text("설정").font(theme.titleFont(28)).foregroundStyle(theme.text)
                 Spacer()
                 RetroSegmented(options: SettingsTab.allCases, selection: $tab) { $0.label }
-                    .frame(width: 500)
+                    .frame(width: 570)
             }
             .padding(.top, embedded ? 16 : 20)
             .padding(.horizontal, 24)
@@ -40,6 +41,7 @@ struct SettingsView: View {
                     case .persona: PersonaSettingsView()
                     case .character: CharacterEditorView()
                     case .calendar: CalendarSettings()
+                    case .career: CareerSettings()
                     case .general: GeneralSettings()
                     }
                 }
@@ -557,6 +559,9 @@ struct GeneralSettings: View {
                 }
                 SettingRow(label: "떠 있는 캐릭터", help: "⌘⇧K 로도 켜고 끌 수 있어요") {
                     Toggle("", isOn: $store.settings.showFloatingCharacter).toggleStyle(.switch).labelsHidden()
+                }
+                SettingRow(label: "앱 안에서 뛰어다니기", help: "CharTodo를 쓰는 동안엔 메인 창 아래쪽을 돌아다니고, 다른 앱으로 가면 바탕화면에 떠 있어요") {
+                    Toggle("", isOn: $store.settings.roamInApp).toggleStyle(.switch).labelsHidden()
                 }
                 SettingRow(label: "완료 축하 모션", help: "할일을 끝내면 캐릭터가 점프해요") {
                     Toggle("", isOn: $store.settings.celebrateOnComplete).toggleStyle(.switch).labelsHidden()

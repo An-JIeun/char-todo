@@ -117,8 +117,10 @@ final class ChatController {
             env.companion.say("앗, 설정이 필요해요 ⚙️")
             return
         }
+        let question = messages.last { $0.role == .user }?.text ?? ""
         let system = PromptBuilder.systemPrompt(name: settings.assistantName, tone: settings.assistantTone,
-                                                persona: settings.persona, context: env.assistantContext())
+                                                persona: settings.persona, context: env.assistantContext(),
+                                                knowledge: env.meetingKnowledge(for: question))
         let history = messages.filter { !$0.isError }.suffix(14).map {
             LLMMessage(role: $0.role == .user ? .user : .assistant, content: $0.text)
         }
@@ -190,9 +192,12 @@ final class ChatController {
         return try await oneShot(prompt, system: system)
     }
 
-    /// 화면 밖 단발 작업 (세부 테스크 쪼개기, 업무일지 초안 등)
-    func oneShot(_ prompt: String, system: String = PromptBuilder.utilitySystem) async throws -> String {
-        let client = try LLMClientFactory.make(env.settings.settings.llm)
+    /// 화면 밖 단발 작업 (세부 테스크 쪼개기, 업무일지 초안, 회의록 정리 등)
+    /// minTokens: 긴 출력이 필요한 작업이면 설정값보다 크게 잡는다.
+    func oneShot(_ prompt: String, system: String = PromptBuilder.utilitySystem, minTokens: Int? = nil) async throws -> String {
+        var config = env.settings.settings.llm
+        if let minTokens { config.maxTokens = max(config.maxTokens, minTokens) }
+        let client = try LLMClientFactory.make(config)
         var out = ""
         for try await chunk in client.stream(system: system, messages: [LLMMessage(role: .user, content: prompt)]) {
             out += chunk

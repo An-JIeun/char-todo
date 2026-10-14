@@ -48,7 +48,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        MainActor.assumeIsolated { AppEnvironment.shared.flush() }
+        MainActor.assumeIsolated { AppEnvironment.shared.shutdown() }
+    }
+
+    /// chartodo:// 링크
+    func application(_ application: NSApplication, open urls: [URL]) {
+        MainActor.assumeIsolated {
+            for url in urls { AppEnvironment.shared.handle(url: url) }
+        }
     }
 }
 
@@ -67,6 +74,19 @@ struct AppCommands: Commands {
             Divider()
             Button("캐릭터 보이기/숨기기") { env.floating.toggleCharacter() }
                 .keyboardShortcut("k", modifiers: [.command, .shift])
+        }
+        CommandMenu("커리어") {
+            Button("career-support 열기") { env.career.open(.jobs) }
+                .keyboardShortcut("c", modifiers: [.command, .shift])
+            Menu("화면 바로 가기") {
+                ForEach(CareerPage.allCases) { page in
+                    Button(page.title) { env.career.open(page) }
+                }
+            }
+            Divider()
+            Button("공고 마감 다시 읽기") { Task { await env.career.sync(manual: true) } }
+            Button("취업 할일 모아보기") { env.handle(url: URL(string: "chartodo://career")!) }
+            Button("커리어 연동 설정…") { env.openSettings(tab: SettingsTab.career.rawValue) }
         }
         CommandGroup(after: .sidebar) {
             ForEach(Array(AppSection.allCases.enumerated()), id: \.offset) { idx, section in

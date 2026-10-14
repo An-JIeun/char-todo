@@ -1,5 +1,7 @@
 import Testing
 import Foundation
+import CoreGraphics
+import AppKit
 @testable import CharTodo
 
 @Suite struct QuickAddParserTests {
@@ -311,5 +313,97 @@ import Foundation
         #expect(table.contains("10/7(수) 오늘"))
         #expect(table.contains("10/8(목) 내일"))
         #expect(table.contains("= 2026-10-20"))
+    }
+}
+
+@Suite struct MotionTests {
+    @Test func hopCrouchesThenFliesThenLands() {
+        let crouch = Motion.hop(0.15, height: 0.3, squash: 1)
+        #expect(crouch.y == 0 && crouch.sy < 1 && crouch.sx > 1)        // 웅크림
+        let apex = Motion.hop(0.45, height: 0.3, squash: 1)
+        #expect(apex.y < -0.29 && apex.air > 0.99)                       // 최고점
+        let land = Motion.hop(0.77, height: 0.3, squash: 1)
+        #expect(land.y == 0 && land.sy < 0.95)                           // 착지 찌그러짐
+        #expect(abs(Motion.hop(1, height: 0.3, squash: 1).sy - 1) < 0.02) // 원래대로
+    }
+
+    @Test func keyframesInterpolateSmoothly() {
+        let frames: [(Double, Double)] = [(0, 0), (0.5, 1), (1, 0)]
+        #expect(Motion.keyframes(0, frames) == 0)
+        #expect(Motion.keyframes(0.5, frames) == 1)
+        #expect(Motion.keyframes(0.25, frames) == 0.5)
+    }
+
+    @Test func actionsOnlyApplyWhenIdleOrListening() {
+        let rig = CharacterRig()
+        let hop = ActionState(.hop, start: 0)
+        #expect(CharacterPose.compute(rig: rig, mood: .idle, time: 0.43, action: hop).offsetY < -0.2)
+        #expect(CharacterPose.compute(rig: rig, mood: .talking, time: 0.43, action: hop).offsetY > -0.05)
+        let turn = CharacterPose.compute(rig: rig, mood: .idle, time: 0.375, action: ActionState(.turnAround, start: 0))
+        #expect(abs(turn.turn) < 0.05)                                    // 반쯤 돌았을 때 납작
+    }
+}
+
+@Suite struct PuppetBuilderTests {
+    /// 크림색 동그란 몸 + 왼쪽으로 튀어나온 짧은 팔 (갈색 윤곽선)
+    func makeCharacter() -> CGImage {
+        let n = 200
+        let ctx = CGContext(data: nil, width: n, height: n, bitsPerComponent: 8, bytesPerRow: 0,
+                            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        let ink = CGColor(red: 0.2, green: 0.1, blue: 0.07, alpha: 1)
+        let cream = CGColor(red: 0.98, green: 0.94, blue: 0.83, alpha: 1)
+        // CG 좌표: 아래가 0 → 화면 위쪽 y=90 은 CG y=110
+        ctx.setFillColor(ink); ctx.fillEllipse(in: CGRect(x: 6, y: 92, width: 46, height: 22))     // 팔 윤곽
+        ctx.setFillColor(cream); ctx.fillEllipse(in: CGRect(x: 10, y: 96, width: 40, height: 14))  // 팔 속살
+        ctx.setFillColor(ink); ctx.fillEllipse(in: CGRect(x: 30, y: 30, width: 140, height: 140))  // 몸 윤곽
+        ctx.setFillColor(cream); ctx.fillEllipse(in: CGRect(x: 35, y: 35, width: 130, height: 130))
+        return ctx.makeImage()!
+    }
+
+    @Test func cutsArmAndHealsBodyOutline() {
+        var rig = CharacterRig()
+        rig.limbMode = .cutout
+        rig.face.skinHex = "#FAF0D4"
+        rig.limbColorHex = "#331A12"
+        for kind in LimbKind.allCases { var l = rig.limb(kind); l.enabled = kind == .leftArm; rig.setLimb(kind, l) }
+        var arm = rig.leftArm
+        arm.grabPoint = CGPoint(x: 18.0 / 200, y: 97.0 / 200)    // 팔 속살 위 (화면 좌표)
+        rig.leftArm = arm
+
+        let image = makeCharacter()
+        let result = PuppetBuilder.build(image: image, rig: rig)
+        #expect(result != nil)
+        #expect(result?.parts["leftArm"] != nil)
+        guard let body = result?.body.cgImageValue, let bmp = PuppetBuilder.Bitmap(body),
+              let part = result?.parts["leftArm"]?.cgImageValue, let pbmp = PuppetBuilder.Bitmap(part) else { return }
+        // 팔이 있던 자리(몸 밖)는 몸통에서 비고, 조각에는 남아 있다
+        #expect(bmp.alpha(16, 97) == 0)
+        #expect(pbmp.alpha(16, 97) > 200)
+        // 몸통 가운데는 그대로
+        #expect(bmp.alpha(100, 100) > 200)
+        // 팔이 붙어 있던 몸 가장자리(x≈32)에는 윤곽선(어두운 색)이 이어져 있다
+        let edgeDark = (30...40).contains { x in bmp.alpha(x, 97) > 200 && bmp.lum(x, 97) < 125 }
+        #expect(edgeDark)
+        // 관절 자동 맞춤 후보가 몸 가장자리 근처에 생긴다
+        if let p = result?.suggestedPivots["leftArm"] { #expect(p.x > 0.1 && p.x < 0.25) }
+    }
+}
+
+@Suite struct PuppetDebugTests {
+    /// CHARTODO_TEST_IMAGE 가 있을 때만 실제 이미지로 반경별 값을 출력 (진단용)
+    @Test func realImageDiagnostics() {
+        guard let path = ProcessInfo.processInfo.environment["CHARTODO_TEST_IMAGE"],
+              let img = NSImage(contentsOfFile: path)?.cgImageValue else { return }
+        var rig = CharacterRig()
+        rig.limbMode = .cutout
+        rig.face.skinHex = "#FAEFD3"
+        rig.limbColorHex = "#321B12"
+        for (k, g) in [(LimbKind.leftArm, CGPoint(x: 0.179, y: 0.704)), (.rightArm, CGPoint(x: 0.829, y: 0.704)),
+                       (.leftLeg, CGPoint(x: 0.386, y: 0.968)), (.rightLeg, CGPoint(x: 0.614, y: 0.968))] {
+            var l = rig.limb(k); l.grabPoint = g; rig.setLimb(k, l)
+        }
+        print("== \(img.width)x\(img.height)")
+        let r = PuppetBuilder.build(image: img, rig: rig)
+        print("PARTS", r?.parts.keys.sorted() ?? [], "PIVOTS", r?.suggestedPivots.mapValues { "(\(Int($0.x * 140)),\(Int($0.y * 125)))" } ?? [:])
     }
 }

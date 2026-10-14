@@ -36,8 +36,13 @@ struct MenuBarView: View {
                 } label: { Label("메인 창", systemImage: "macwindow") }
                 .buttonStyle(.retro(.secondary, compact: true))
                 Button {
+                    AppEnvironment.shared.career.open(.jobs)
+                } label: { Image(systemName: "briefcase.fill") }
+                .buttonStyle(.retro(.secondary, compact: true))
+                .help("career-support 열기 (⌘⇧C)")
+                Button {
                     floating.toggleCharacter()
-                } label: { Image(systemName: floating.isCharacterVisible ? "eye.fill" : "eye.slash") }
+                } label: { Image(systemName: floating.isCompanionVisible ? "eye.fill" : "eye.slash") }
                 .buttonStyle(.retro(.secondary, compact: true))
                 Spacer()
                 Button { NSApp.terminate(nil) } label: { Image(systemName: "power") }

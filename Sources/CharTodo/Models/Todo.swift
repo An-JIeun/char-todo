@@ -100,6 +100,10 @@ struct TodoItem: Identifiable, Codable, Hashable {
     var calendarEventID: String?
     /// 분류용 태그 (# 없이 저장)
     var tags: [String] = []
+    /// 관련 웹 링크 (예: 채용 공고)
+    var link: String?
+    /// 외부에서 가져온 할일의 출처 키 (예: "career:<공고 링크>") — 동기화 때 같은 항목을 찾는 데 쓴다
+    var sourceKey: String?
 
     init(title: String, scope: TodoScope = .day, date: Date = Date(), time: Date? = nil,
          quadrant: Quadrant? = nil, subtasks: [SubTask] = [], notes: String = "", tags: [String] = []) {
@@ -112,6 +116,9 @@ struct TodoItem: Identifiable, Codable, Hashable {
         self.notes = notes
         self.tags = Tag.normalizeList(tags)
     }
+
+    /// career-support 공고에서 가져온 할일
+    var isCareerJob: Bool { sourceKey?.hasPrefix("career:") == true }
 
     var subtaskProgress: (done: Int, total: Int) {
         (subtasks.filter(\.isDone).count, subtasks.count)
@@ -142,6 +149,7 @@ struct TodoItem: Identifiable, Codable, Hashable {
     // 이후 버전에서 필드가 추가돼도 기존 데이터가 깨지지 않도록 관대한 디코딩.
     enum CodingKeys: String, CodingKey {
         case id, title, notes, scope, date, time, durationMinutes, quadrant, subtasks, isDone, completedAt, createdAt, calendarEventID, tags
+        case link, sourceKey
     }
 
     init(from decoder: Decoder) throws {
@@ -160,6 +168,8 @@ struct TodoItem: Identifiable, Codable, Hashable {
         createdAt = try c.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
         calendarEventID = try c.decodeIfPresent(String.self, forKey: .calendarEventID)
         tags = try c.decodeIfPresent([String].self, forKey: .tags) ?? []
+        link = try c.decodeIfPresent(String.self, forKey: .link)
+        sourceKey = try c.decodeIfPresent(String.self, forKey: .sourceKey)
     }
 }
 

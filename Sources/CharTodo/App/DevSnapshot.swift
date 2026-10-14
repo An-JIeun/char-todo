@@ -37,7 +37,7 @@ enum DevSnapshot {
             }
             delay += 2
         }
-        for tab in ["persona", "character", "ai"] {
+        for tab in ["persona", "character", "ai", "career"] {
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
                 AppEnvironment.shared.openSettings(tab: tab)
             }
@@ -84,7 +84,7 @@ enum DevSnapshot {
                     Text(row.0).font(.system(size: 12, weight: .bold)).frame(width: 80, alignment: .leading)
                     ForEach(Array(row.1.enumerated()), id: \.offset) { _, f in
                         CharacterFrame(rig: rig, image: image, aspect: aspect, mood: f.0, bodyColor: color,
-                                       scale: 1, time: f.2, action: f.1, puppet: puppet, eyeRects: settings.eyeRects)
+                                       scale: 1, time: f.2, action: f.1, puppet: puppet, eyes: settings.eyes)
                     }
                 }
             }

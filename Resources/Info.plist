@@ -36,6 +36,17 @@
 	<string>캘린더 일정을 할일과 함께 보여주기 위해 접근합니다.</string>
 	<key>NSCalendarsWriteOnlyAccessUsageDescription</key>
 	<string>할일을 캘린더 일정으로 추가하기 위해 접근합니다.</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.lempickaaa.CharTodo</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>chartodo</string>
+			</array>
+		</dict>
+	</array>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsArbitraryLoads</key>

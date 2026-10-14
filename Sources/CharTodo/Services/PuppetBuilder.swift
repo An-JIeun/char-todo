@@ -167,6 +167,23 @@ enum PuppetBuilder {
             return Mask(w: cw, h: ch, v: out, ox: cx0 + ox, oy: cy0 + oy)
         }
 
+        /// 원형으로 넓히기 (각진 모서리 없이 선 두께를 정확히 맞출 때)
+        func dilateDisk(_ r: Int) -> Mask {
+            guard r > 0 else { return self }
+            var offsets: [(Int, Int)] = []
+            for dy in -r...r { for dx in -r...r where dx * dx + dy * dy <= r * r { offsets.append((dx, dy)) } }
+            var out = [UInt8](repeating: 0, count: w * h)
+            for y in 0..<h {
+                for x in 0..<w where v[y * w + x] != 0 {
+                    for (dx, dy) in offsets {
+                        let nx = x + dx, ny = y + dy
+                        if nx >= 0, ny >= 0, nx < w, ny < h { out[ny * w + nx] = 1 }
+                    }
+                }
+            }
+            return Mask(w: w, h: h, v: out, ox: ox, oy: oy)
+        }
+
         /// 정사각 창 안이 모두 1이면 1 (erode) / 하나라도 1이면 1 (dilate). 누적합으로 O(w·h).
         func morph(radius r: Int, erode: Bool) -> Mask {
             guard r > 0 else { return self }
@@ -258,38 +275,33 @@ enum PuppetBuilder {
             guard let found = findLimb(src: src, window: window, gx: gx, gy: gy, ow: ow, skin: skin,
                                        maxArea: max(ow * ow * 6, alphaCount / 25)) else { continue }
             let limb = found.limb          // 팔다리 모양 (창 좌표)
-            let opened = found.opened      // 팔다리를 뗀 몸통 실루엣
-            let inner = opened.morph(radius: ow, erode: true)
-            let near = limb.morph(radius: ow, erode: false)          // 팔다리 바로 옆
-            let zone = limb.morph(radius: ow * 2 + 2, erode: false)  // 다듬을 범위
-            let edge = limb.morph(radius: 1, erode: false)           // 안티앨리어싱 가장자리 포함
+            let opened = found.opened      // 팔다리를 뗀 몸통 실루엣 (관절 추정용)
+            let edge = limb.dilateDisk(1)                          // 안티앨리어싱 가장자리 포함
+            let halo = limb.dilateDisk(3)                          // 원본 가장자리의 반투명 테두리
+            let band = edge.dilateDisk(ow)                         // 잘린 경계에서 선 두께만큼 (원형)
 
             var sprite = Bitmap(w: w, h: h)
             var jx = 0, jy = 0, jn = 0
-            for ly in 0..<zone.h {
-                for lx in 0..<zone.w where zone.v[ly * zone.w + lx] != 0 {
-                    let x = lx + zone.ox, y = ly + zone.oy
+            for ly in 0..<band.h {
+                for lx in 0..<band.w where band.v[ly * band.w + lx] != 0 {
+                    let x = lx + band.ox, y = ly + band.oy
                     guard x >= 0, y >= 0, x < w, y < h else { continue }
                     let i = y * w + x
-                    let inLimb = limb[x, y]
-                    // 조각: 팔다리 모양 그대로 (가장자리 1px 포함)
-                    if edge[x, y] && !opened[x, y] && src.px[i * 4 + 3] > 0 {
-                        sprite.copyPixel(from: src, x, y)
-                        limbOwned[i] = 1
-                    }
-                    // 관절 후보: 몸통과 맞닿은 팔다리 픽셀
-                    if inLimb && (opened[x + 1, y] || opened[x - 1, y] || opened[x, y + 1] || opened[x, y - 1]) {
-                        jx += x; jy += y; jn += 1
-                    }
-                    // 몸통 다듬기
-                    if opened[x, y] {
-                        if !inner[x, y] {
-                            body.set(x, y, ink)                  // 빈자리에 윤곽선 채우기
-                        } else if near[x, y] {
-                            body.set(x, y, skin)                 // 팔다리 뿌리 자국 지우기
+                    let a = src.px[i * 4 + 3]
+                    if edge[x, y] {
+                        // 조각: 팔다리 모양 그대로, 몸통에서는 지운다
+                        if a > 0 { sprite.copyPixel(from: src, x, y); limbOwned[i] = 1 }
+                        body.clear(x, y)
+                        if limb[x, y] && (opened[x + 1, y] || opened[x - 1, y] || opened[x, y + 1] || opened[x, y - 1]) {
+                            jx += x; jy += y; jn += 1
                         }
-                    } else if edge[x, y] {
-                        body.clear(x, y)                         // 몸 밖으로 나온 팔다리 제거
+                    } else if a > 128 && window[x, y] && src.lum(x, y) >= 125 {
+                        // 잘린 경계 바로 안쪽의 몸통 피부 → 원래 선 두께로 윤곽선을 잇는다
+                        body.set(x, y, ink)
+                    } else if halo[x, y] && !window[x, y] && a > 0 && a < 230 {
+                        // 몸 밖에 남은 반투명 테두리(잔상)는 조각 쪽으로 옮긴다
+                        sprite.copyPixel(from: src, x, y)
+                        body.clear(x, y)
                     }
                 }
             }
@@ -347,7 +359,7 @@ enum PuppetBuilder {
         }
 
         let radii = [ow, ow * 3 / 2, ow * 2, ow * 5 / 2, ow * 3, ow * 4, ow * 5].map { max(2, $0) }
-        var best: (limb: Mask, opened: Mask, count: Int)?
+        var candidates: [(limb: Mask, opened: Mask, count: Int)] = []
         for r in radii {
             let opened = window.morph(radius: r, erode: true).morph(radius: r, erode: false)
             func protr(_ x: Int, _ y: Int) -> Bool { window[x, y] && !opened[x, y] }
@@ -379,12 +391,20 @@ enum PuppetBuilder {
                 if lx == 0 || ly == 0 || lx == window.w - 1 || ly == window.h - 1 { touchesBorder = true }
                 stack.append((x + 1, y)); stack.append((x - 1, y)); stack.append((x, y + 1)); stack.append((x, y - 1))
             }
+            if ProcessInfo.processInfo.environment["CHARTODO_PUPPET_DEBUG"] != nil {
+                // 경계(몸통과 맞닿은 속살 픽셀) 길이도 함께 기록
+                var junction = 0
+                for ly in 0..<core.h { for lx in 0..<core.w where core.v[ly * core.w + lx] != 0 {
+                    let x = lx + core.ox, y = ly + core.oy
+                    if opened[x + 1, y] || opened[x - 1, y] || opened[x, y + 1] || opened[x, y - 1] { junction += 1 }
+                } }
+                print("LIMB r=\(r) count=\(count) border=\(touchesBorder) junction=\(junction) ow=\(ow)")
+            }
             if count < max(8, ow * ow / 3) { continue }          // 너무 작음 → 더 굵게
-            if count > maxArea || touchesBorder { break }        // 몸통까지 번짐 → 직전 결과 사용
-            if let b = best, count > b.count * 3 { break }       // 갑자기 커짐 = 몸으로 샘
+            if count > maxArea || touchesBorder { break }        // 몸통까지 번짐 → 그 전 결과 중에서 고른다
 
             // 3) 속살 둘레의 진한 윤곽선(돌출부에 속한 것)을 붙인다
-            let ring = core.morph(radius: ow + 2, erode: false)
+            let ring = core.dilateDisk(ow + 1)
             var limb = core
             for ly in 0..<limb.h {
                 for lx in 0..<limb.w where ring.v[ly * limb.w + lx] != 0 && limb.v[ly * limb.w + lx] == 0 {
@@ -392,9 +412,19 @@ enum PuppetBuilder {
                     if protr(x, y) && (dark(x, y) || src.alpha(x, y) < 200) { limb.v[ly * limb.w + lx] = 1 }
                 }
             }
-            best = (limb, opened, count)
+            candidates.append((limb, opened, count))
         }
-        return best.map { ($0.limb, $0.opened) }
+        // 반경을 키워도 크기가 그대로인 구간(= 팔다리가 몸에서 깔끔히 떨어진 상태)을 고른다
+        for i in 0..<max(0, candidates.count - 1) where candidates[i].count == candidates[i + 1].count {
+            return (candidates[i].limb, candidates[i].opened)
+        }
+        // 안정 구간이 없으면 급격히 커지기(몸으로 샘) 직전의 가장 큰 결과
+        var pick = candidates.first
+        for c in candidates.dropFirst() {
+            guard let p = pick, c.count <= p.count * 4 else { break }
+            pick = c
+        }
+        return pick.map { ($0.limb, $0.opened) }
     }
 
     /// 팔다리 분리용 실루엣: 피부색·윤곽선만 남기고(갈기 등 다른 색은 제외), 몸 안쪽 구멍(눈썹·볼터치)은 메운다
@@ -429,51 +459,96 @@ enum PuppetBuilder {
     }
 }
 
-/// 이미지 얼굴 분석: 깜빡일 때 눈만 정확히 가리기 위해 실제 눈(어두운 덩어리) 영역을 찾는다
+/// 이미지 얼굴 분석: 깜빡일 때 눈만 정확히 가리기 위해 실제 눈 모양을 찾는다 (눈썹은 절대 건드리지 않는다)
 enum FaceAnalyzer {
-    /// 반환: 몸통 단위 좌표의 눈 영역 [왼쪽, 오른쪽]. 못 찾으면 nil
-    static func eyeRects(image cg: CGImage, face: FaceConfig) -> [CGRect]? {
+    struct Eyes {
+        /// 몸통 단위 좌표의 눈 영역 [왼쪽, 오른쪽]
+        var rects: [CGRect]
+        /// 눈 모양대로 칠한 피부색 가림막 (원본과 같은 크기, 나머지는 투명)
+        var cover: NSImage
+    }
+
+    static func analyze(image cg: CGImage, face: FaceConfig) -> Eyes? {
         guard let bmp = PuppetBuilder.Bitmap(cg) else { return nil }
         let w = bmp.w, h = bmp.h
-        let es = face.eyeSize * Double(w)
-        var result: [CGRect] = []
+        let es = max(4, Int(face.eyeSize * Double(w)))
+        let skin = PuppetBuilder.hexRGB(face.skinHex)
+
+        func rgb(_ x: Int, _ y: Int) -> (Int, Int, Int) {
+            let i = (y * w + x) * 4
+            let a = max(1, Int(bmp.px[i + 3]))
+            return (Int(bmp.px[i]) * 255 / a, Int(bmp.px[i + 1]) * 255 / a, Int(bmp.px[i + 2]) * 255 / a)
+        }
+        /// 눈썹·갈기 같은 주황/분홍 계열
+        func warm(_ x: Int, _ y: Int) -> Bool {
+            let (r, g, b) = rgb(x, y)
+            return bmp.alpha(x, y) > 128 && r > 170 && r - b > 55 && r - g > 25
+        }
+        func eyePixel(_ x: Int, _ y: Int) -> Bool {
+            guard bmp.alpha(x, y) > 128 else { return false }
+            let (r, g, b) = rgb(x, y)
+            let lum = (r * 299 + g * 587 + b * 114) / 1000
+            let neutralWhite = r > 232 && g > 232 && b > 232 && abs(r - b) < 18   // 하이라이트 (크림 피부는 제외)
+            return lum < 130 || neutralWhite
+        }
+
+        var cover = PuppetBuilder.Bitmap(w: w, h: h)
+        var rects: [CGRect] = []
         for side in [-1.0, 1.0] {
             let hx = Int((face.center.x + side * face.eyeSpacing / 2) * Double(w))
             let hy = Int(face.center.y * Double(h))
-            let win = Int(es * 1.3)
-            // 1) 힌트 근처에서 가장 어두운 픽셀을 씨앗으로
+            // 1) 힌트 바로 주변(눈 크기의 0.6배)에서 가장 어두운 점 = 눈동자
             var seed: (Int, Int)?
             var best = 999
-            for y in max(0, hy - win)..<min(h, hy + win) {
-                for x in max(0, hx - win)..<min(w, hx + win) where bmp.alpha(x, y) > 128 {
+            let near = max(2, es * 6 / 10)
+            for y in max(0, hy - near)..<min(h, hy + near) {
+                for x in max(0, hx - near)..<min(w, hx + near) where bmp.alpha(x, y) > 128 {
                     let l = bmp.lum(x, y)
                     if l < best { best = l; seed = (x, y) }
                 }
             }
-            guard let s = seed, best < 110 else { return nil }
-            // 2) 어두운 픽셀을 따라 채우기 (반경 제한)
-            let limit = Int(es * 2.2)
-            var visited = Set<Int>()
-            var stack = [s]
-            var minX = s.0, maxX = s.0, minY = s.1, maxY = s.1
+            guard let s0 = seed, best < 110 else { return nil }
+
+            // 2) 눈동자 위로 올라가며 눈썹(주황)의 아래 끝을 찾는다 → 그 아래만 눈
+            var browBottom = -1
+            for y in stride(from: s0.1 - 1, through: max(0, s0.1 - es * 3), by: -1) {
+                if (max(0, s0.0 - es)..<min(w, s0.0 + es)).contains(where: { warm($0, y) }) { browBottom = y; break }
+            }
+            let topLimit = browBottom >= 0 ? browBottom + max(2, es / 8) : s0.1 - es * 2
+
+            // 3) 어두운 눈동자 + 흰 하이라이트만 따라 채우기
+            var mask = [UInt8](repeating: 0, count: w * h)
+            var stack = [s0]
+            var minX = s0.0, maxX = s0.0, minY = s0.1, maxY = s0.1
+            let reach = es * 2
             while let (x, y) = stack.popLast() {
-                let key = y * w + x
-                guard !visited.contains(key) else { continue }
-                visited.insert(key)
+                guard x >= 0, y >= 0, x < w, y < h, y > topLimit, abs(x - s0.0) <= reach, abs(y - s0.1) <= reach else { continue }
+                let i = y * w + x
+                guard mask[i] == 0, eyePixel(x, y) else { continue }
+                mask[i] = 1
                 minX = min(minX, x); maxX = max(maxX, x); minY = min(minY, y); maxY = max(maxY, y)
-                for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
-                    let nx = x + dx, ny = y + dy
-                    guard nx >= 0, ny >= 0, nx < w, ny < h, abs(nx - s.0) < limit, abs(ny - s.1) < limit,
-                          !visited.contains(ny * w + nx), bmp.alpha(nx, ny) > 128, bmp.lum(nx, ny) < 125 else { continue }
-                    stack.append((nx, ny))
+                stack.append((x + 1, y)); stack.append((x - 1, y)); stack.append((x, y + 1)); stack.append((x, y - 1))
+            }
+            guard maxX - minX >= 2, maxY - minY >= 2 else { return nil }
+
+            // 4) 눈 모양을 2px 넓혀 피부색으로 칠한다. 눈썹 줄 위·주황 픽셀은 절대 칠하지 않는다
+            let pad = max(2, es / 10)
+            for y in max(topLimit + 1, minY - pad)...min(h - 1, maxY + pad) {
+                for x in max(0, minX - pad)...min(w - 1, maxX + pad) where bmp.alpha(x, y) > 0 && !warm(x, y) {
+                    var hit = false
+                    outer: for dy in -pad...pad {
+                        for dx in -pad...pad {
+                            let nx = x + dx, ny = y + dy
+                            if nx >= 0, ny >= 0, nx < w, ny < h, mask[ny * w + nx] != 0 { hit = true; break outer }
+                        }
+                    }
+                    if hit { cover.set(x, y, skin) }
                 }
             }
-            let bw = maxX - minX + 1, bh = maxY - minY + 1
-            // 눈썹 윤곽선 등과 이어져 너무 커지면 실패 처리
-            guard bw >= 2, bh >= 2, Double(bw) < es * 2.6, Double(bh) < es * 2.8 else { return nil }
-            result.append(CGRect(x: Double(minX) / Double(w), y: Double(minY) / Double(h),
-                                 width: Double(bw) / Double(w), height: Double(bh) / Double(h)))
+            rects.append(CGRect(x: Double(minX) / Double(w), y: Double(minY) / Double(h),
+                                width: Double(maxX - minX + 1) / Double(w), height: Double(maxY - minY + 1) / Double(h)))
         }
-        return result.count == 2 ? result.sorted { $0.minX < $1.minX } : nil
+        guard rects.count == 2, let img = cover.nsImage else { return nil }
+        return Eyes(rects: rects.sorted { $0.minX < $1.minX }, cover: img)
     }
 }

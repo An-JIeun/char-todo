@@ -77,6 +77,13 @@ struct TodoEditorSheet: View {
                         RetroTextEditor(text: $draft.notes, placeholder: "자세한 내용, 링크, 참고사항…", minHeight: 70)
                     }
 
+                    field("링크") {
+                        TextField("https://… (공고·문서 주소)", text: Binding(
+                            get: { draft.link ?? "" },
+                            set: { draft.link = $0.trimmed.isEmpty ? nil : $0.trimmed }
+                        )).retroField()
+                    }
+
                     if calendar.enabled && calendar.canWrite {
                         Toggle(isOn: $linkCalendar) {
                             Label("macOS 캘린더에 일정으로 추가", systemImage: "calendar.badge.plus")

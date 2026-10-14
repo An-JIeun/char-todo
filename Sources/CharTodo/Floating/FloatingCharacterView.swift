@@ -13,14 +13,7 @@ struct FloatingCharacterView: View {
     @State private var now = Date()
     private let sleepTimer = Timer.publish(every: 30, on: .main, in: .common).autoconnect()
 
-    var mood: CharacterMood {
-        if let m = companion.transientMood { return m }
-        if chat.awaitingFirstToken { return .thinking }
-        if chat.isBusy { return .talking }
-        if floating.isChatVisible { return .listening }
-        if director.isSleepy(at: now) { return .sleepy }
-        return .idle
-    }
+    var mood: CharacterMood { director.mood(at: now) }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -41,7 +34,7 @@ struct FloatingCharacterView: View {
             CharacterView(rig: settings.settings.character, image: settings.characterImage,
                           aspect: settings.characterAspect, mood: mood,
                           bodyColor: bodyColor, action: director.action, facing: director.facing,
-                          puppet: settings.puppet, eyeRects: settings.eyeRects)
+                          puppet: settings.puppet, eyes: settings.eyes)
                 .contentShape(Rectangle())
                 .gesture(
                     DragGesture(minimumDistance: 3)
@@ -83,6 +76,7 @@ struct FloatingCharacterView: View {
         }
         Button("💬 질문봇 열기") { floating.showChat() }
         Button("🗂 메인 창 열기") { AppEnvironment.shared.openMainWindow() }
+        Menu("💼 career-support") { CareerMenuItems() }
         Divider()
         let open = store.todos(on: Date()).filter { !$0.isDone }.count
         Text("오늘 남은 할일 \(open)개")

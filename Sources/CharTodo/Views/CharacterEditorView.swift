@@ -277,6 +277,9 @@ struct CharacterEditorView: View {
                     SettingRow(label: "돌아다니기", help: "가끔 원래 자리 근처를 종종걸음으로 걸어요") {
                         Toggle("", isOn: $store.settings.character.wanders).toggleStyle(.switch).labelsHidden()
                     }
+                    SettingRow(label: "앱 안에서 뛰어다니기", help: "CharTodo를 쓰는 동안엔 메인 창 아래쪽을 뛰어다녀요") {
+                        Toggle("", isOn: $store.settings.roamInApp).toggleStyle(.switch).labelsHidden()
+                    }
                     Text("혼자 있을 때 깡총·두리번·손 흔들기·기지개 같은 행동을 해요. 마우스를 올리면 반응하고, 할일을 끝내면 신나서 뛰어요.")
                         .font(theme.font(10.5)).foregroundStyle(theme.textMuted)
                 }
@@ -298,7 +301,7 @@ struct CharacterEditorView: View {
             } else {
                 CharacterView(rig: rig, image: store.characterImage, aspect: store.characterAspect, mood: previewMood,
                               bodyColor: Color(hex: rig.bodyColorHex ?? "") ?? theme.accent, scale: previewScale, animated: animate,
-                              action: previewAction, puppet: store.puppet, eyeRects: store.eyeRects)
+                              action: previewAction, puppet: store.puppet, eyes: store.eyes)
             }
             if showHandles {
                 Rectangle()

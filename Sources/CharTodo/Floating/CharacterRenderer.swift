@@ -38,6 +38,8 @@ struct CharacterRenderer {
     var puppetParts: [String: Image] = [:]
     /// 이미지 얼굴의 실제 눈 영역 (몸통 단위 좌표, [왼, 오른])
     var eyeRects: [CGRect]? = nil
+    /// 눈 모양대로 칠한 피부색 가림막 (눈썹은 비어 있음)
+    var eyeCover: Image? = nil
 
     private var W: CGFloat { layout.bodySize.width }
     private var H: CGFloat { layout.bodySize.height }
@@ -365,16 +367,17 @@ struct CharacterRenderer {
 
         // 눈
         let found = overlay ? eyeRects.map { $0.map(pixelRect) } : nil
+        let closedNow = expression != .normal
+        if closedNow, let found, found.count == 2, let eyeCover {
+            // 눈 모양 가림막 한 장으로 두 눈만 지운다 (눈썹은 가림막에 없어서 그대로 보인다)
+            ctx.draw(eyeCover, in: CGRect(origin: .zero, size: layout.bodySize))
+        }
         for (idx, side) in [-1.0, 1.0].enumerated() {
             if let found, found.count == 2 {
-                // 실제 눈 모양만 가리고 그 안에 감은 눈을 그린다 (눈썹은 그대로)
                 let r = found[idx]
-                switch expression {
-                case .blink, .sleepy, .happy:
-                    coverEye(&ctx, rect: r)
+                if closedNow {
+                    if eyeCover == nil { coverEye(&ctx, rect: r) }
                     closedEye(&ctx, in: r, ink: ink, line: g.line, smiling: expression == .happy)
-                case .normal:
-                    break
                 }
                 continue
             }
@@ -587,13 +590,13 @@ struct CharacterView: View {
     var action: ActionState? = nil
     var facing: Double = 1
     var puppet: PuppetImages? = nil
-    var eyeRects: [CGRect]? = nil
+    var eyes: FaceAnalyzer.Eyes? = nil
 
     var body: some View {
         TimelineView(.animation(minimumInterval: 1 / 40, paused: !animated)) { tl in
             CharacterFrame(rig: rig, image: image, aspect: aspect, mood: mood, bodyColor: bodyColor, scale: scale,
                            time: animated ? tl.date.timeIntervalSinceReferenceDate : 0, action: action, facing: facing,
-                           puppet: puppet, eyeRects: eyeRects)
+                           puppet: puppet, eyes: eyes)
         }
     }
 }
@@ -610,7 +613,7 @@ struct CharacterFrame: View {
     var action: ActionState? = nil
     var facing: Double = 1
     var puppet: PuppetImages? = nil
-    var eyeRects: [CGRect]? = nil
+    var eyes: FaceAnalyzer.Eyes? = nil
 
     var body: some View {
         let layout = CharacterLayout(rig: rig, aspect: aspect, scale: scale)
@@ -622,7 +625,8 @@ struct CharacterFrame: View {
         Canvas { ctx, _ in
             let renderer = CharacterRenderer(rig: rig, pose: pose, layout: layout, image: swiftImage,
                                              bodyColor: bodyColor, mood: mood, time: time, facing: facing,
-                                             puppetBody: puppetBody, puppetParts: puppetParts, eyeRects: eyeRects)
+                                             puppetBody: puppetBody, puppetParts: puppetParts,
+                                             eyeRects: eyes?.rects, eyeCover: eyes.map { Image(nsImage: $0.cover) })
             renderer.draw(in: &ctx)
         }
         .frame(width: layout.canvasSize.width, height: layout.canvasSize.height)

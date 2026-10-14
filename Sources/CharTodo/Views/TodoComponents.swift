@@ -104,6 +104,15 @@ struct TodoRowView: View {
             if !todo.notes.trimmed.isEmpty {
                 Image(systemName: "note.text").font(.system(size: 10)).foregroundStyle(theme.textMuted)
             }
+            if let link = todo.link, let url = URL(string: link) {
+                Button {
+                    NSWorkspace.shared.open(url)
+                } label: {
+                    Chip(text: todo.isCareerJob ? "공고" : "링크", symbol: "link", color: theme.accent2)
+                }
+                .buttonStyle(.plain)
+                .help(link)
+            }
             ForEach(todo.tags, id: \.self) { tag in
                 Button {
                     AppEnvironment.shared.openTag(tag)
@@ -211,6 +220,15 @@ struct TodoContextMenu: View {
             Divider()
             Button("이번 주 목표로") { store.move(todo.id, to: Date(), scope: .week) }
             Button("이번 달 목표로") { store.move(todo.id, to: Date(), scope: .month) }
+        }
+        if todo.link != nil || todo.isCareerJob {
+            Divider()
+            if let link = todo.link, let url = URL(string: link) {
+                Button(todo.isCareerJob ? "공고 페이지 열기" : "링크 열기") { NSWorkspace.shared.open(url) }
+            }
+            if todo.isCareerJob {
+                Button("career-support에서 보기") { AppEnvironment.shared.career.open(.jobs) }
+            }
         }
         if calendar.enabled && calendar.canWrite {
             Divider()

@@ -1,7 +1,8 @@
 import SwiftUI
 
 enum AppSection: String, CaseIterable, Identifiable {
-    case today, week, month, matrix, tags, journal, settings
+    // 회의록은 기존 단축키(설정 ⌘7)를 유지하려고 맨 뒤에 둔다. 사이드바에서는 업무일지 아래에 보인다.
+    case today, week, month, matrix, tags, journal, settings, meetings
 
     var id: String { rawValue }
 
@@ -14,6 +15,7 @@ enum AppSection: String, CaseIterable, Identifiable {
         case .tags: "태그"
         case .journal: "업무일지 · TIL"
         case .settings: "설정"
+        case .meetings: "회의록"
         }
     }
 
@@ -26,6 +28,7 @@ enum AppSection: String, CaseIterable, Identifiable {
         case .tags: "tag.fill"
         case .journal: "book.closed.fill"
         case .settings: "gearshape.fill"
+        case .meetings: "person.3.sequence.fill"
         }
     }
 }
@@ -34,6 +37,7 @@ struct MainView: View {
     @Environment(\.theme) private var theme
     @Environment(\.openWindow) private var openWindow
     @Environment(SettingsStore.self) private var settings
+    @Environment(FloatingController.self) private var floating
     @State private var section: AppSection = .today
 
     var body: some View {
@@ -45,11 +49,22 @@ struct MainView: View {
                 PatternBackground(enabled: settings.settings.showPattern)
                 content
                     .padding(.top, 14)
+                if floating.isStageActive {
+                    // 앱을 쓰는 동안에는 캐릭터가 창 아래쪽을 뛰어다닌다
+                    InAppCompanionView()
+                        .padding(.horizontal, 12)
+                        .transition(.opacity)
+                }
             }
         }
         .background(theme.background)
         .ignoresSafeArea(.container, edges: .top)
-        .onAppear { AppEnvironment.shared.openWindowAction = openWindow }
+        .onAppear {
+            AppEnvironment.shared.openWindowAction = openWindow
+            // 창이 실제로 화면에 올라온 뒤에 상태를 읽는다 (가림·데스크톱·Dock 여부는 FloatingController가 추적)
+            DispatchQueue.main.async { floating.refreshMainWindow() }
+        }
+        .onDisappear { floating.refreshMainWindow(closing: true) }
         .onReceive(NotificationCenter.default.publisher(for: .navigateRequest)) { note in
             if let raw = note.object as? String, let s = AppSection(rawValue: raw) { section = s }
         }
@@ -64,6 +79,7 @@ struct MainView: View {
         case .tags: TagsView()
         case .journal: JournalView()
         case .settings: SettingsView(embedded: true)
+        case .meetings: MeetingsView()
         }
     }
 }
@@ -91,6 +107,10 @@ struct SidebarView: View {
             .padding(.horizontal, 10)
 
             Spacer()
+
+            CareerShortcutCard()
+                .padding(.horizontal, 10)
+                .padding(.bottom, 8)
 
             assistantCard
                 .padding(.horizontal, 10)
@@ -177,7 +197,7 @@ struct SidebarView: View {
                               aspect: settings.characterAspect, mood: chat.isBusy ? .talking : .idle,
                               bodyColor: Color(hex: settings.settings.character.bodyColorHex ?? "") ?? theme.accent,
                               scale: 34 / max(40, settings.settings.character.size), puppet: settings.puppet,
-                              eyeRects: settings.eyeRects)
+                              eyes: settings.eyes)
                     .frame(width: 58, height: 58)
                     .clipped()
                 VStack(alignment: .leading, spacing: 2) {
@@ -198,7 +218,7 @@ struct SidebarView: View {
                 Button {
                     floating.toggleCharacter()
                 } label: {
-                    Image(systemName: floating.isCharacterVisible ? "eye.fill" : "eye.slash.fill")
+                    Image(systemName: floating.isCompanionVisible ? "eye.fill" : "eye.slash.fill")
                 }
                 .buttonStyle(.retro(.secondary, compact: true))
                 .help("떠 있는 캐릭터 보이기/숨기기")

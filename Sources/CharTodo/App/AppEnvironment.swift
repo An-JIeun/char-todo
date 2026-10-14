@@ -47,10 +47,12 @@ final class AppEnvironment {
     let store: TodoStore
     let settings: SettingsStore
     let calendar: CalendarService
+    let meetings: MeetingStore
     let companion = CompanionState()
     private(set) var chat: ChatController!
     private(set) var floating: FloatingController!
     private(set) var director: CharacterDirector!
+    private(set) var career: CareerSupportService!
 
     private var briefingTimer: Timer?
 
@@ -58,14 +60,37 @@ final class AppEnvironment {
         store = TodoStore()
         settings = SettingsStore()
         calendar = CalendarService()
+        meetings = MeetingStore()
         chat = ChatController(env: self)
         floating = FloatingController(env: self)
         director = CharacterDirector(env: self)
+        career = CareerSupportService(env: self)
+
+        // 회의록 정리 JSON은 길어서 토큰 한도를 넉넉히 잡는다
+        meetings.analyzer = { [weak self] prompt in
+            guard let self else { throw CancellationError() }
+            return try await self.chat.oneShot(prompt, minTokens: 4096)
+        }
+        meetings.onAnalyzed = { [weak self] m in
+            guard let self, self.settings.settings.showFloatingCharacter else { return }
+            let found = m.actions.isEmpty ? "" : " 할일 \(m.actions.count)개도 찾았어요 📌"
+            self.companion.flash(.happy, duration: 1.5)
+            self.companion.say("'\(m.title)' 회의록 정리 끝!\(found)", duration: 6)
+        }
 
         calendar.enabled = settings.settings.calendarEnabled
         calendar.hiddenCalendarIDs = Set(settings.settings.hiddenCalendarIDs)
 
         store.onMutation = { [weak self] m in self?.handle(m) }
+        NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.floating.refreshMainWindow()
+                self?.floating.appActive = true
+            }
+        }
+        NotificationCenter.default.addObserver(forName: NSApplication.didResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.floating.appActive = false }
+        }
         settings.onChange = { [weak self] old, new in self?.settingsChanged(old, new) }
     }
 
@@ -73,6 +98,7 @@ final class AppEnvironment {
         floating.applyVisibility()
         director.start()
         startBriefingTimer()
+        career.start()
         greet()
         DevSnapshot.runIfRequested()
     }
@@ -103,6 +129,13 @@ final class AppEnvironment {
     func flush() {
         store.writeNow()
         settings.writeNow()
+        meetings.writeNow()
+    }
+
+    /// 앱 종료: CharTodo가 켠 career-support 서버 정리 + 저장
+    func shutdown() {
+        career.shutdown()
+        flush()
     }
 
     // MARK: 변경 처리
@@ -149,12 +182,18 @@ final class AppEnvironment {
     private func settingsChanged(_ old: AppSettings, _ new: AppSettings) {
         calendar.enabled = new.calendarEnabled
         calendar.hiddenCalendarIDs = Set(new.hiddenCalendarIDs)
-        if old.showFloatingCharacter != new.showFloatingCharacter { floating.applyVisibility() }
+        if old.showFloatingCharacter != new.showFloatingCharacter || old.roamInApp != new.roamInApp { floating.applyVisibility() }
         if old.character != new.character {
             floating.layoutForRig()
             director.settingsChanged()
         }
         if old.llm.claudeCodePath != new.llm.claudeCodePath { ClaudeCodeLocator.resetCache() }
+        // career-support 연동을 켜거나 폴더·가져오기 조건을 바꾸면 바로 한 번 읽는다
+        let oc = old.career, nc = new.career
+        if (nc.syncEnabled && !oc.syncEnabled) || oc.path != nc.path
+            || (nc.syncEnabled && (oc.statuses != nc.statuses || oc.tag != nc.tag)) {
+            Task { await career.sync(manual: true) }
+        }
     }
 
     // MARK: 어시스턴트 컨텍스트
@@ -198,6 +237,36 @@ final class AppEnvironment {
             linkToCalendar(item.id)
         }
         return item.id
+    }
+
+    // MARK: 회의록
+
+    /// 질문과 관련된 회의록 지식 (회의록이 없으면 nil)
+    func meetingKnowledge(for question: String) -> String? {
+        meetings.knowledgeContext(for: question) { [store] id in store.todo(id: id)?.isDone }
+    }
+
+    /// 회의 할일을 앱 할일로 등록한다. 이미 등록돼 있고 지워지지 않았으면 건너뛴다. 새로 등록한 개수를 돌려준다.
+    @discardableResult
+    func addMeetingActions(_ meetingID: UUID, actionIDs: [UUID]? = nil) -> Int {
+        guard let m = meetings.meeting(id: meetingID) else { return 0 }
+        var added = 0
+        for a in m.actions where actionIDs?.contains(a.id) ?? true {
+            if let existing = a.todoID, store.todo(id: existing) != nil { continue }
+            let item = a.makeTodo(meeting: m)
+            store.add(item)
+            meetings.setTodoID(item.id, meeting: m.id, action: a.id)
+            added += 1
+        }
+        if added > 0 { companion.say("회의 할일 \(added)개 등록! 📌", duration: 3) }
+        return added
+    }
+
+    /// 질문봇을 열고 이 회의에 대해 묻는다.
+    func askAboutMeeting(_ id: UUID) {
+        guard let m = meetings.meeting(id: id) else { return }
+        floating.showChat()
+        chat.send("\(m.date.dayKey) '\(m.title)' 회의 내용을 정리해 주고, 내가 챙겨야 할 할일과 다음에 확인할 점을 알려 줘.")
     }
 
     // MARK: 자동 브리핑
@@ -246,6 +315,34 @@ final class AppEnvironment {
         NotificationCenter.default.post(name: .navigateRequest, object: "settings")
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
             NotificationCenter.default.post(name: .settingsTabRequest, object: tab)
+        }
+    }
+
+    /// chartodo:// 링크 (career-support 웹 화면의 바로 가기 등)
+    /// open · today|week|month|matrix|tags|journal|settings|meetings · career(취업 태그 모아보기) · tag/<태그> · sync(공고 다시 읽기)
+    /// web[/jobs|strategy|portfolio|generate|dashboard|config] (career-support 웹 화면 — 단축어·Raycast 등에서 바로 가기)
+    func handle(url: URL) {
+        guard url.scheme?.lowercased() == "chartodo" else { return }
+        let target = (url.host ?? "").lowercased()
+        switch target {
+        case "career":
+            let tag = Tag.normalize(settings.settings.career.tag)
+            if tag.isEmpty { openMainWindow() } else { openTag(tag) }
+        case "tag":
+            let tag = url.pathComponents.dropFirst().joined(separator: "/")
+            if tag.isEmpty { openMainWindow() } else { openTag(tag) }
+        case "sync":
+            openMainWindow()
+            Task { await career.sync(manual: true) }
+        case "web":
+            career.open(CareerPage(rawValue: url.pathComponents.dropFirst().first ?? "") ?? .jobs)
+        default:
+            openMainWindow()
+            if AppSection(rawValue: target) != nil {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                    NotificationCenter.default.post(name: .navigateRequest, object: target)
+                }
+            }
         }
     }
 

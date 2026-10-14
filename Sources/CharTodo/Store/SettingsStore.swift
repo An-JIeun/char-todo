@@ -27,8 +27,9 @@ final class SettingsStore {
     /// 파츠 분리 결과 (머리·팔·다리 조각 + 다듬은 몸통)
     private(set) var puppet: PuppetImages?
     private(set) var isBuildingPuppet = false
-    /// 이미지 얼굴의 실제 눈 영역 (깜빡일 때 눈썹은 남기고 눈만 가리기 위해)
-    private(set) var eyeRects: [CGRect]?
+    /// 이미지 얼굴의 실제 눈 영역·가림막 (깜빡일 때 눈썹은 남기고 눈만 가리기 위해)
+    private(set) var eyes: FaceAnalyzer.Eyes?
+    var eyeRects: [CGRect]? { eyes?.rects }
     @ObservationIgnored private var eyeKey = ""
     @ObservationIgnored private var puppetWork: DispatchWorkItem?
 
@@ -56,15 +57,15 @@ final class SettingsStore {
     /// 눈 위치 힌트(얼굴 중심·간격·크기)가 바뀌면 실제 눈 영역을 다시 찾는다
     func refreshEyeRects() {
         let face = settings.character.face
-        guard face.style == .overlay, let cg = characterImage?.cgImageValue else { eyeRects = nil; eyeKey = ""; return }
-        let key = "\(settings.character.imageFile ?? "")|\(face.center)|\(face.eyeSpacing)|\(face.eyeSize)"
+        guard face.style == .overlay, let cg = characterImage?.cgImageValue else { eyes = nil; eyeKey = ""; return }
+        let key = "\(settings.character.imageFile ?? "")|\(face.center)|\(face.eyeSpacing)|\(face.eyeSize)|\(face.skinHex)"
         guard key != eyeKey else { return }
         eyeKey = key
         DispatchQueue.global(qos: .userInitiated).async {
-            let rects = FaceAnalyzer.eyeRects(image: cg, face: face)
+            let result = FaceAnalyzer.analyze(image: cg, face: face)
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.eyeKey == key else { return }
-                self.eyeRects = rects
+                self.eyes = result
             }
         }
     }

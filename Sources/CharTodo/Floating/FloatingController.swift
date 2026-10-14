@@ -35,7 +35,21 @@ final class ClickThroughHostingView<Content: View>: NSHostingView<Content> {
 @Observable
 final class FloatingController {
     private(set) var isChatVisible = false
+    /// 바탕화면에 떠 있는 캐릭터 패널이 보이는지
     private(set) var isCharacterVisible = false
+    /// 앱 안(메인 창)에서 뛰어다니는 중인지
+    private(set) var isStageActive = false
+    /// 어느 쪽으로든 캐릭터가 보이는지
+    var isCompanionVisible: Bool { isCharacterVisible || isStageActive }
+
+    /// 메인 창이 실제로 화면에 보이는지. 열려 있어도 다른 창에 완전히 가려졌거나, 다른 데스크톱에 있거나,
+    /// Dock으로 내려가 있으면 false — 이때 앱 안으로 들어가면 캐릭터가 안 보이는 창 속으로 사라진다.
+    @ObservationIgnored private(set) var mainWindowVisible = false {
+        didSet { if mainWindowVisible != oldValue { applyVisibility() } }
+    }
+    @ObservationIgnored var appActive = true {
+        didSet { if appActive != oldValue { applyVisibility() } }
+    }
 
     static let bubbleHeight: CGFloat = 76
     static let minPanelWidth: CGFloat = 230
@@ -53,12 +67,80 @@ final class FloatingController {
 
     init(env: AppEnvironment) {
         self.env = env
+        // 모니터 연결이 바뀌면 화면 밖으로 사라진 캐릭터를 데려온다
+        NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.ensureOnScreen() }
+        }
+        // 메인 창이 가려지거나·닫히거나·내려가면 캐릭터를 바탕화면으로 돌려보낸다
+        for name in [NSWindow.didChangeOcclusionStateNotification, NSWindow.didMiniaturizeNotification,
+                     NSWindow.didDeminiaturizeNotification, NSWindow.willCloseNotification] {
+            NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
+                MainActor.assumeIsolated {
+                    guard let w = note.object as? NSWindow, Self.isMainWindow(w) else { return }
+                    self?.refreshMainWindow(closing: name == NSWindow.willCloseNotification)
+                }
+            }
+        }
+        NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refreshMainWindow() }
+        }
+    }
+
+    static func isMainWindow(_ w: NSWindow) -> Bool {
+        guard !(w is FloatingPanel), let id = w.identifier?.rawValue else { return false }
+        return id == "main" || id.hasPrefix("main")
+    }
+
+    /// 메인 창 상태를 다시 읽는다 (창 이벤트·앱 활성화 때)
+    func refreshMainWindow(closing: Bool = false) {
+        guard !closing, let w = NSApp.windows.first(where: Self.isMainWindow) else {
+            mainWindowVisible = false
+            return
+        }
+        mainWindowVisible = w.isVisible && !w.isMiniaturized && w.isOnActiveSpace && w.occlusionState.contains(.visible)
+    }
+
+    /// 사용자가 지금 캐릭터를 볼 수 있는지 (보이는 메인 창 안에서 뛰어다니거나, 패널이 실제로 화면에 있음)
+    var isActuallyVisible: Bool {
+        if isStageActive { return true }
+        guard isCharacterVisible, let p = characterPanel else { return false }
+        return p.isVisible && p.occlusionState.contains(.visible)
     }
 
     // MARK: 캐릭터 패널
 
     func applyVisibility() {
-        if env.settings.settings.showFloatingCharacter { showCharacter() } else { hideCharacter() }
+        let s = env.settings.settings
+        let stage = s.showFloatingCharacter && s.roamInApp && mainWindowVisible && appActive
+        if isStageActive != stage {
+            isStageActive = stage
+            stopWalking()
+        }
+        if s.showFloatingCharacter && !stage { showCharacter() } else { hideCharacter() }
+        positionChat()
+    }
+
+    /// 캐릭터 창이 어느 화면에도 충분히 걸쳐 있지 않으면 메인 화면 오른쪽 아래로 옮기고,
+    /// 화면 가장자리에 반쯤 걸쳐 있으면 몸이 다 보이도록 안쪽으로 당긴다.
+    func ensureOnScreen() {
+        guard let panel = characterPanel else { return }
+        var origin = panel.frame.origin
+        let core = panel.frame.insetBy(dx: panel.frame.width * 0.3, dy: panel.frame.height * 0.3)
+        if let screen = NSScreen.screens.first(where: { $0.visibleFrame.intersects(core) }) {
+            // 패널 가운데에 그려지는 캐릭터 몸이 화면 밖으로 잘리지 않게
+            let vf = screen.visibleFrame
+            let charW = CharacterLayout(rig: env.settings.settings.character, aspect: env.settings.characterAspect).canvasSize.width
+            let margin = max(0, (panel.frame.width - charW) / 2)
+            origin.x = min(max(origin.x, vf.minX - margin), vf.maxX - panel.frame.width + margin)
+        } else {
+            let vf = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+            origin = NSPoint(x: vf.maxX - panel.frame.width - 24, y: vf.minY + 12)
+        }
+        guard origin != panel.frame.origin else { return }
+        panel.setFrameOrigin(origin)
+        homeX = origin.x
+        UserDefaults.standard.set(NSStringFromPoint(origin), forKey: originKey)
+        positionChat()
     }
 
     var panelSize: NSSize {
@@ -77,6 +159,7 @@ final class FloatingController {
             homeX = panel.frame.origin.x
         }
         layoutForRig()
+        ensureOnScreen()
         characterPanel?.orderFrontRegardless()
         isCharacterVisible = true
     }
@@ -86,8 +169,23 @@ final class FloatingController {
         isCharacterVisible = false
     }
 
+    /// ⌘⇧K · 👁 버튼. 켜져 있는데 어디에도 안 보이면 끄지 않고 불러온다.
     func toggleCharacter() {
-        env.settings.settings.showFloatingCharacter.toggle()
+        if env.settings.settings.showFloatingCharacter && !isActuallyVisible {
+            summon()
+        } else {
+            env.settings.settings.showFloatingCharacter.toggle()
+        }
+    }
+
+    /// 캐릭터를 지금 보이는 곳으로 데려온다
+    func summon() {
+        if NSApp.isHidden { NSApp.unhideWithoutActivation() }
+        env.settings.settings.showFloatingCharacter = true
+        refreshMainWindow()
+        applyVisibility()
+        env.companion.flash(.happy, duration: 1.2)
+        env.companion.say(env.line(.greeting), duration: 3)
     }
 
     /// 리그(크기·팔다리)가 바뀌면 발 위치를 고정한 채 패널 크기를 맞춘다.
@@ -214,6 +312,9 @@ final class FloatingController {
             let placeLeft = f.midX > vf.midX
             let x = placeLeft ? f.midX - size.width - 40 : f.midX + 40
             origin = NSPoint(x: x, y: f.minY + 20)
+        } else if isStageActive, let main = DevSnapshot.mainWindow() {
+            // 앱 안에서 뛰어다니는 중이면 메인 창 오른쪽 아래 안쪽에
+            origin = NSPoint(x: main.frame.maxX - size.width - 24, y: main.frame.minY + 110)
         } else {
             origin = NSPoint(x: vf.maxX - size.width - 24, y: vf.minY + 24)
         }
@@ -233,12 +334,14 @@ struct EnvRoot<Content: View>: View {
         content()
             .environment(\.theme, theme)
             .environment(env.store)
+            .environment(env.meetings)
             .environment(env.settings)
             .environment(env.chat)
             .environment(env.companion)
             .environment(env.floating)
             .environment(env.director)
             .environment(env.calendar)
+            .environment(env.career)
             .preferredColorScheme(theme.colorScheme)
     }
 }

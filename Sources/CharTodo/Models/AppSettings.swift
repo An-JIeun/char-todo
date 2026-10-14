@@ -293,6 +293,8 @@ struct AppSettings: Codable, Equatable {
 
     // 캐릭터
     var showFloatingCharacter = true
+    /// 앱을 쓰는 동안에는 메인 창 안에서 뛰어다니기
+    var roamInApp = true
     var character = CharacterRig()
 
     // 캘린더
@@ -300,6 +302,33 @@ struct AppSettings: Codable, Equatable {
     var hiddenCalendarIDs: [String] = []
     var exportCalendarID: String?
     var autoAddTimedTodosToCalendar = false
+
+    // career-support 연동
+    var career = CareerSupportConfig()
+}
+
+/// career-support(채용 공고 관리 툴) 연동 설정
+struct CareerSupportConfig: Codable, Equatable {
+    /// 공고 마감일을 할일로 가져오기
+    var syncEnabled = false
+    /// career-support 저장소 폴더 (비우면 자동 탐색)
+    var path = ""
+    /// 가져온 할일에 붙일 태그
+    var tag = "취업"
+    /// 할일로 가져올 지원 상태
+    var statuses = ["관심", "지원예정"]
+    /// career-support에서 지원완료 이후 상태가 되면 할일도 완료 처리
+    var completeWhenApplied = true
+    /// 바로 가기를 눌렀는데 꺼져 있으면 백엔드·프론트를 켜기
+    var autoStartServers = true
+    /// CharTodo가 켠 서버는 CharTodo를 끌 때 같이 끄기
+    var stopServersOnQuit = true
+    /// 이미 가져온 공고 (출처 키 → 마감 원문). 지운 할일을 다시 만들지 않고, 마감이 바뀌었을 때만 날짜를 고친다.
+    var imported: [String: String] = [:]
+
+    static let jobStatuses = ["관심", "지원예정", "지원완료", "서류합격", "면접", "최종합격", "탈락"]
+    /// 이 상태가 되면 "지원했다"로 본다
+    static let appliedStatuses: Set<String> = ["지원완료", "서류합격", "면접", "최종합격", "탈락"]
 }
 
 /// 저장된 JSON에 없는 키는 기본값으로 채워서 디코딩한다 (버전 업에도 설정 유지).

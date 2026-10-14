@@ -205,8 +205,21 @@ enum PromptBuilder {
     }
 
     static func systemPrompt(name: String, tone: AssistantTone, persona: PersonaConfig = PersonaConfig(),
-                             context: AssistantContext) -> String {
+                             context: AssistantContext, knowledge: String? = nil) -> String {
         let today = DateFormatters.dayKey.string(from: context.now)
+        var meetingRules = "", meetingBlock = ""
+        if let knowledge, !knowledge.trimmed.isEmpty {
+            meetingRules = """
+
+            [회의록 질문 규칙]
+            - 업무·회의에 대한 질문은 맨 아래 '회의록 지식'을 근거로 답하고, 어느 회의(날짜·제목)에서 나온 내용인지 함께 밝혀.
+            - 회의록에 없는 내용은 추측하지 말고 "회의록에서 찾지 못했어"라고 말해.
+            - 여러 회의에 걸친 질문이면 지식그래프 연결을 보고 날짜순으로 흐름을 정리해.
+            - 회의 할일을 앱에 넣어 달라고 하면 위 [[ADD]] 규칙대로 등록해.
+
+            """
+            meetingBlock = "\n\n===== 회의록 지식 (회의록에서 정리한 업무 지식그래프) =====\n" + knowledge
+        }
         return """
         너는 macOS 할일 앱 'CharTodo' 화면 위에 떠 있는 뉴트로 캐릭터 비서 '\(name)'야.
 
@@ -228,9 +241,9 @@ enum PromptBuilder {
         - "내일", "다음 주 금요일", "오후 3시" 같은 표현은 아래 날짜표로 정확히 변환해. 시간을 말하지 않았으면 time은 빼.
         - 본문에서는 무엇을 추가했는지 한두 줄로만 말하고, JSON을 설명하지 마. 이미 있는 할일과 같은 건 만들지 마.
         예: [[ADD {"title":"팀 회의 준비","date":"\(today)","time":"15:00","duration":60,"quadrant":1,"tags":["업무","회의"],"subtasks":["안건 정리","자료 출력"]}]]
-
+        \(meetingRules)
         ===== 사용자 데이터 =====
-        \(contextBlock(context))
+        \(contextBlock(context))\(meetingBlock)
         """
     }
 
@@ -345,6 +358,38 @@ enum PromptBuilder {
         if !entry.work.trimmed.isEmpty { s += "\n\n[사용자가 이미 적은 메모]\n\(entry.work.trimmed)" }
         if !entry.issues.trimmed.isEmpty { s += "\n\n[이슈]\n\(entry.issues.trimmed)" }
         return s
+    }
+
+    /// 회의록 → 안건·결정·할일·개체·관계 JSON
+    static func meetingPrompt(text: String, baseDate: Date, limit: Int = 30000) -> String {
+        var body = text.trimmed
+        if body.count > limit { body = String(body.prefix(limit)) + "\n…(이하 생략)" }
+        return """
+        아래 회의록을 분석해서 JSON 객체 하나만 출력해. 코드블록(```)이나 설명은 붙이지 마.
+
+        {
+          "title": "회의 제목 (20자 안팎)",
+          "date": "YYYY-MM-DD (회의 날짜, 회의록에 없으면 null)",
+          "summary": "핵심 요약 2~3문장",
+          "participants": ["참석자 이름"],
+          "topics": [{"title": "안건", "points": ["논의된 요점 (최대 4개, 짧게)"]}],
+          "decisions": ["결정된 사항"],
+          "actions": [{"title": "할일 (동사로 끝나는 짧은 문장)", "owner": "담당자 (없으면 \\"\\")", "due": "YYYY-MM-DD 또는 null"}],
+          "entities": [{"name": "이름", "type": "project|system|org|person|concept"}],
+          "relations": [{"from": "개체나 안건 이름", "rel": "관계 (예: 담당, 사용, 의존, 일정, 소속, 영향)", "to": "개체나 안건 이름"}]
+        }
+
+        규칙:
+        - 회의록에 적힌 내용만 써. 없는 사실을 지어내지 마.
+        - 결정이나 할일이 회의록에 없으면 decisions, actions는 빈 배열 [] 로 둬.
+        - entities: 프로젝트·시스템/서비스·조직/팀·사람·핵심 개념. 회의록 표기 그대로 쓰고, 같은 대상은 한 가지 표기로 통일해. (여러 회의가 이 이름으로 연결된다)
+        - relations: 개체/안건 사이에 회의록에서 드러나는 관계만, 최대 15개.
+        - "다음 주 금요일" 같은 상대 날짜는 회의 날짜 기준으로 YYYY-MM-DD로 바꿔. 회의 날짜를 모르면 \(baseDate.dayKey)(\(DateFormatters.weekdayShort.string(from: baseDate))) 기준.
+        - 모든 값은 한국어로 (고유명사는 원문 표기 유지).
+
+        [회의록]
+        \(body)
+        """
     }
 
     /// "- 항목" / "1. 항목" 목록을 문자열 배열로
